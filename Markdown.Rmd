@@ -1,0 +1,1113 @@
+---
+title: "Data Science 3 Term Project: Using NLP to Detect/Predict Sarcasm and Irony"
+author: 'Istvan Janco #2003877'
+date: "5/17/2021"
+output: 
+   html_document:
+         code_folding: hide
+---
+
+```{r setup, warning=FALSE, message=FALSE}
+
+# load package
+#install.packages("readtext")
+library(readtext)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(lubridate)
+library(ggplot2)
+library(data.table)
+library(tidytext)
+#install.packages("lexicon")
+library(lexicon)
+data("stop_words")
+#install.packages("textdata")
+library(textdata)
+library(scales)
+#install.packages("wordcloud")
+library(wordcloud)
+#install.packages("reshape2")
+library(reshape2)
+#install.packages("sentimentr")
+library(sentimentr)
+#install.packages("cleanNLP")
+library(cleanNLP)
+#install.packages("forcats")
+library(forcats)
+#install.packages("igraph")
+library(igraph)
+#install.packages("ggraph")
+library(ggraph)
+#install.packages("widyr")
+library(widyr)
+#install.packages("topicmodels")
+library(topicmodels)
+library(caret)
+library(psych)
+library(readr)
+#install.packages("tm")
+library(tm)
+#install.packages("tidymodels")
+library(tidymodels)
+#install.packages("discrim")
+library(discrim)
+#install.packages("glue")
+library(glue)
+#install.packages("h2o")
+library(h2o)
+library(kableExtra)
+
+
+options(digits = 3)
+```
+
+```{r Data prep, warning=FALSE, message=FALSE}
+
+#### IMPORT AND CLEAN ####
+
+# read the files 
+IronicData <- readtext("/Users/steve_j/Documents/CEU /data_science/DS3/TermProject/Data/IronicTest/*.txt")
+
+# split to columns based on delimiter 
+IronicData <- data.frame(do.call('rbind', strsplit(as.character(IronicData$text),"</", fixed=FALSE)))
+
+#### Clean ironic data
+IronicData$X1 <- gsub('<STARS>', '', IronicData$X1)
+IronicData$X2 <- gsub('STARS>', '', IronicData$X2)
+IronicData$X2 <- gsub('<TITLE>', '', IronicData$X2)
+IronicData$X3 <- gsub('TITLE>', '', IronicData$X3)
+IronicData$X3 <- gsub('<DATE>', '', IronicData$X3)
+IronicData$X4 <- gsub('DATE>', '', IronicData$X4)
+IronicData$X4 <- gsub('<AUTHOR>', '', IronicData$X4)
+IronicData$X5 <- gsub('AUTHOR>', '', IronicData$X5)
+IronicData$X5 <- gsub('<PRODUCT>', '', IronicData$X5)
+IronicData$X6 <- gsub('PRODUCT>', '', IronicData$X6)
+IronicData$X6 <- gsub('<REVIEW>', '', IronicData$X6)
+
+# rename columns and drop redundant ones 
+IronicData <- IronicData %>% 
+  transmute(stars = X1,
+            title = X2, 
+            date = X3, 
+            author = X4, 
+            product = X5, 
+            review = X6)
+
+# move the author column to front
+IronicData  <- IronicData  %>% select(author, everything())
+
+# convert the date column to date format 
+IronicData$date  <- parse_date_time(IronicData$date, orders = "mdy")
+
+# convert the stars to numeric
+IronicData$stars <- as.numeric(IronicData$stars)
+
+
+#### Clean regular data
+RegularData <- readtext("/Users/steve_j/Documents/CEU /data_science/DS3/TermProject/Data/RegularTest/*.txt")
+
+# split to columns based on delimiter 
+RegularData <- data.frame(do.call('rbind', strsplit(as.character(RegularData$text),"</", fixed=FALSE)))
+
+# clean up the data
+RegularData$X1 <- gsub('<STARS>', '', RegularData$X1)
+RegularData$X2 <- gsub('STARS>', '', RegularData$X2)
+RegularData$X2 <- gsub('<TITLE>', '', RegularData$X2)
+RegularData$X3 <- gsub('TITLE>', '', RegularData$X3)
+RegularData$X3 <- gsub('<DATE>', '', RegularData$X3)
+RegularData$X4 <- gsub('DATE>', '', RegularData$X4)
+RegularData$X4 <- gsub('<AUTHOR>', '', RegularData$X4)
+RegularData$X5 <- gsub('AUTHOR>', '', RegularData$X5)
+RegularData$X5 <- gsub('<PRODUCT>', '', RegularData$X5)
+RegularData$X6 <- gsub('PRODUCT>', '', RegularData$X6)
+RegularData$X6 <- gsub('<REVIEW>', '', RegularData$X6)
+
+# rename columns and drop redundant ones 
+RegularData <- RegularData %>% 
+  transmute(stars = X1,
+            title = X2, 
+            date = X3, 
+            author = X4, 
+            product = X5, 
+            review = X6)
+
+
+# move the author column to front
+RegularData  <- RegularData %>% select(author, everything())
+
+# convert the date column to date format 
+RegularData$date  <- parse_date_time(RegularData$date, orders = "mdy")
+
+# convert the stars to numeric
+RegularData$stars <- as.numeric(RegularData$stars)
+
+# drop N/As 
+IronicData <- IronicData %>% drop_na()
+RegularData <- RegularData %>% drop_na()
+
+# adding factors 
+IronicData$ironic <- as.factor(1)
+RegularData$ironic <- as.factor(0)
+
+# merging the dataframes 
+Data <- rbind(IronicData, RegularData)
+
+
+#### UNNESTING THE TOKENS ####
+
+# DataReview$review
+Reviews <- unnest_tokens(Data, review, review)
+# DataTitle$title
+Titles <- unnest_tokens(Data, title, title)
+# DataProduct$product
+Products <- unnest_tokens(Data, product, product)
+
+# getting rid of stopwords 
+#IronicData
+Reviews <- anti_join(Reviews, stop_words, by = c("review" = "word"))
+Titles <- anti_join(Titles, stop_words, by = c("title" = "word"))
+Products <- anti_join(Products, stop_words, by = c("product" = "word"))
+
+# Removing redundant dataframes 
+rm("IronicData", "RegularData")
+
+
+#### Calcualte mean sentiments for each observation  #### 
+
+# remove punctuation 
+Data$author <- gsub('[[:punct:] ]+',' ',Data$author)
+
+# unnest train data based on authors 
+Data <- Data %>% 
+  unnest_tokens(word, author, token = "sentences") %>% 
+  anti_join(stop_words)
+
+# get the sentiment of the authors' nicknames 
+author_sentiment <- sentiment_by(Data$word)
+
+# add element id 
+Data$element_id <- seq_along(Data[,1])
+
+Data <- Data %>% 
+  full_join(author_sentiment)
+
+# cleanup 
+Data <- Data %>%
+  transmute(stars = stars,
+            ironic = ironic,
+            title = title, 
+            author = word, 
+            author_sentiment = ave_sentiment, 
+            product = product, 
+            review = review)
+
+
+# same for title
+
+Data$title <- gsub('[[:punct:] ]+',' ',Data$title)
+
+# unnest train data based on authors 
+Data <- Data %>% 
+  unnest_tokens(word, title, token = "sentences") %>% 
+  anti_join(stop_words)
+
+
+# get the sentiment of titles 
+title_sentiment <- sentiment_by(Data$word)
+
+# add element id 
+Data$element_id <- seq_along(Data[,1])
+
+Data <- Data %>% 
+  full_join(title_sentiment)
+
+
+# cleanup 
+Data <- Data %>%
+  transmute(stars = stars,
+            ironic = ironic, 
+            author = author, 
+            author_sentiment = author_sentiment, 
+            title  = word, 
+            title_sentiment = ave_sentiment,
+            product = product, 
+            review = review)
+
+# same for product 
+
+Data$product <- gsub('[[:punct:] ]+',' ',Data$product)
+
+# unnest train data based on authors 
+Data <- Data %>% 
+  unnest_tokens(word, product, token = "sentences") %>% 
+  anti_join(stop_words)
+
+
+# get the sentiment of the authors' nicknames 
+product_sentiment <- sentiment_by(Data$word)
+
+# add element id 
+Data$element_id <- seq_along(Data[,1])
+
+Data <- Data %>% 
+  full_join(product_sentiment)
+
+
+# cleanup 
+Data <- Data %>%
+  transmute(stars = stars,
+            ironic = ironic, 
+            author = author, 
+            author_sentiment = author_sentiment, 
+            title  = title, 
+            title_sentiment = title_sentiment,
+            product = word,
+            product_sentiment = ave_sentiment,
+            review = review)
+
+# same for review
+
+#Data$product <- gsub('[[:punct:] ]+',' ',Data$review)
+
+# unnest train data based on authors 
+Data1 <- Data %>% 
+  unnest_tokens(word, review, token = "sentences") %>% 
+  anti_join(stop_words)
+
+# get the sentiment of the authors' nicknames 
+review_sentiment <- sentiment_by(Data1$word)
+
+# add element id 
+Data1$element_id <- seq_along(Data1[,1])
+
+Data1 <- Data1 %>% 
+  full_join(review_sentiment)
+
+Data2<- aggregate( ave_sentiment ~ title, Data1, mean )
+
+Data <- Data %>% 
+  left_join(Data2) %>% 
+  rename(review_sentiment = ave_sentiment) %>%
+  drop_na()
+
+# Leaving only the sentiment
+
+DataNum <- Data %>%
+  transmute(ironic = ironic, 
+            stars = stars, 
+            author_sentiment = author_sentiment,
+            title_sentiment = title_sentiment,
+            product_sentiment = product_sentiment,
+            review_sentiment = review_sentiment)
+
+
+rm("Data1", "Data2", "product_sentiment",
+   "review_sentiment", "author_sentiment",
+   "title_sentiment")
+
+# Splitting into train and test 
+set.seed(1969)
+trainIndex <- createDataPartition(Data$ironic, p = .7,
+                                  list = FALSE,
+                                  times = 1)
+# data sets 
+DataTrainNum <- DataNum[ trainIndex,]
+DataTestNum <- DataNum[-trainIndex,]
+
+
+
+
+```
+
+## Contents
+
+1. Data 
+2. Research Purpose
+3. Data Preparation
+4. Preliminary Analysis 
+5. EDA
+6. Detection / Prediction
+7. Conclusion 
+
+
+### 1. Data 
+
+The data was sourced from the following GitHub repo https://github.com/ef2020/SarcasmAmazonReviewsCorpus/wiki. It contains a collection of ironic/sarcastic and regular (non-sarcastic) reviews. The reviews included into the Corpus come from www.Amazon.com.  
+
+For each review, information such as the product description, the number of stars that was assigned to the product by its authors, etc. is provided. 
+The used data originally was stored in two sets of txt files, described below: 
+
+* Ironic: the directory contains all the ironic/sarcastic Amazon product reviews that were submitted on Step 1 of the corpus collection procedure and confirmed as ironic on Step 2 by both majority voting and label quality control algorithm. 
+* Regular: contains all the regular Amazon product reviews that were submitted on Step 1 of the corpus collection procedure and confirmed as regular on Step 2 by both majority voting and label quality control algorithm. 
+
+### 2. Research Purpose
+
+The aim of the research is to investigate some of distinct features of sarcastic reviews, using NPL techniques, such as tf-idf and sentiment analysis. After cleaning and pre-processing, models are used to explore the optimal way for predicting sarcasm in reviews. The main interest is to discover distinctive features of sarcasm that would help enable to establish a robust method of sarcasm prediction. 
+
+
+### 3. Data Preparation 
+
+The original data was cleaned and re-structured to tidy format. After that, it was stripped of all the stopwords. The unnest_token() function was used to unnest the titles, product description and reviews, using different tokens, such as words, ngrams and sentences. Words and bi-grams were used as tokens for EDA and visualizations. For sarcasm predictions, the main tokens were sentences.
+After unnesting the tokens one by one, the approximate sentiment (polarity) of tokens was calculated for each token using the unnest_by() function from the "sentimentr" package. At the end the text was re-constructed and the approximate sentiments were averaged. The average sentiments of the reviews were used as explanatory variables in the models. 
+
+
+### 4.  Preliminary Analysis 
+
+Let's take a look at some of the distinct features of ironic and non-ironic reviews, before pre-processing. 
+Below is the distribution of the stars for both data sets. 
+
+```{r, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%"}
+
+#### PRELIMINARY ANALYSIS ####
+
+# distribution of stars in the Ironic data vs Regular data?  
+
+# Ironic data
+Data %>%
+  filter(ironic == 1) %>% 
+  ggplot(aes(stars)) + 
+  geom_histogram() + 
+  theme_bw() + 
+  labs(x = "Stars", y = "Count")
+  # 
+# most number of stars is at 1 and 5.Although I would expect the stars to be descending from 1  
+
+# Regular data 
+Data %>%
+  filter(ironic == 0) %>% 
+  ggplot(aes(stars)) + 
+  geom_histogram() + 
+  theme_bw() + 
+  labs(x = "Stars", y = "Count")
+  
+# most reviews are at 5, so it might be a sample issue 
+
+```
+
+Unsurprisingly, the most stars are at one for the ironic reviews. However, what might be surprising is the second most frequent count, which is five stars. It might suggest that there is some context incongruence (mismatch between the sentiment and the context it is used in). 
+
+We can also investigate the number of authors for both data sets, to see if there are any duplication among the authors. 
+
+```{r, warning=FALSE, message=FALSE,include=FALSE}
+
+# How many authors there are? Do some authors duplicate? 
+
+# Ironic data 
+
+IronicData <- Data %>%
+  filter(ironic == 1) 
+  n_distinct(IronicData$author, na.rm = FALSE)
+
+# 387 authors vs 432 reviews, means that some of the authors are duplicated in the dataset
+
+# Regular data 
+  IronicData <- Data %>%
+    filter(ironic == 0) 
+  n_distinct(IronicData$author, na.rm = FALSE)
+# same for the regular data, 805 reviews but only 770 authors
+
+# Removing redundant dataframes 
+rm("IronicData", "RegularData")
+
+```
+
+In both cases it looks like there are some duplication among the authors. For regular reviews the number of authors is 764 and the number of reviews is 805. The ironic reviews consist of 432 observation and the number of authors is 432.
+
+
+### 5. EDA 
+
+Once, the data is cleaned and pre-processed, we can take a look at some of the features of ironic and regular reviews. 
+Below are two examples of the most common words for both data sets for the reviews and titles. 
+
+```{r, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap= "Most frequent words used in Reviews"}
+##### EDA ####
+
+# based on the above code, make a chart on most common words for ironic and non ironic reviews as  a comparison 
+# Ironic
+Reviews %>%
+  filter(ironic == "1") %>% 
+  rename(word = review) %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+# Regular
+Reviews %>%
+  filter(ironic == "0") %>% 
+  rename(word = review) %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+```
+
+We can see that in case of reviews, the most common words are quite similar. 
+
+```{r, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap= "Most frequent words used in Titles"}
+
+# Same for titles 
+
+# Ironic
+Titles %>%
+  filter(ironic == "1") %>% 
+  rename(word = title) %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+# Regular
+Titles %>%
+  filter(ironic == "0") %>% 
+  rename(word = title) %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+
+
+```
+
+On the other hand, in case of the titles there are some discrepancies in the most common words. The titles of ironic reviews seem to contain more negative words. 
+
+Let's use a visualization to see the differences between words used in the ironic and regular reviews. 
+
+```{r, warning=FALSE, message=FALSE}
+
+# Word Usage in Reviews 
+Usage <- Reviews %>% 
+  mutate(review = str_extract(review, "[a-z']+")) %>% 
+  count(ironic, review) %>% 
+  group_by(ironic) %>% 
+  mutate(proportion  = n / sum(n)) %>% 
+  select(-n) %>% 
+  spread(ironic, proportion)
+
+# Re-name the columns 
+colnames(Usage)[colnames(Usage) == '1'] <- 'ironic'
+
+colnames(Usage)[colnames(Usage) == '0'] <- 'regular'
+
+# Similarities in word usage between ironic and regular reviews 
+ggplot(Usage, aes(`ironic`, `regular`, label = review)) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3) +
+  geom_text(aes(label = review), check_overlap = TRUE, vjust = 1.5) +
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), 
+                       low = "darkslategray4", high = "gray75") +
+  theme_bw() + 
+  theme(legend.position="none") +
+  labs(title = "Word usage Ironic vs. Regular",
+       x = "Ironic Reviews", y = "Regular Reviews")
+# looks like no significant difference in the word usage between ironic and non ironic reviews
+
+```
+
+The spread of the data points is quite tight, which suggests that there's no significant difference in the word usage between ironic and non ironic reviews. 
+
+We can also see the correlation between the used words in the data. 
+
+```{r}
+# Quantifying the the differences between ironic and non ironic reviews
+
+cor.test(Usage$ironic, Usage$regular)
+
+```
+
+The estimates correlation of 0.917 also suggests that there is not much difference difference between data sets in terms of words used. 
+
+
+#### 5.1. Sentiment Lexicon Compariosn
+
+We can also use sentiment analysis to discover differences between sentiments of reviews. 
+In order to proceed with sentiment analysis, we need to choose a lexicon to use. 
+The below chart compares the sentiments of three lexicons. 
+
+```{r, warning=FALSE, message=FALSE}
+
+# The correlation test suggests that the usage of the words is almost similar. 
+
+#### Comparing Sentiment lexicons #### 
+
+# getting rid of junk 
+Reviews <- Reviews %>% 
+  mutate(review = str_extract(review, "[a-z']+"))
+
+# load sentiment lexicons 
+NRC <- get_sentiments("nrc")
+Bing <- get_sentiments("bing")
+Afinn <- get_sentiments("afinn")
+
+# comparing the sentiments of different lexicons on the data 
+
+# create dataframe for Afinn reviews 
+ReviewsAfinn <- Reviews %>% 
+  rename(word = review) %>% 
+  mutate(linenumber = row_number()) %>% 
+  inner_join(Afinn) %>% 
+  group_by(index = linenumber %/% 100) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+# create dataframe for NRC & Bing reviews
+ReviewsNRCBing <- bind_rows(
+  Reviews %>% 
+    rename(word = review) %>% 
+    mutate(linenumber = row_number()) %>%
+    inner_join(Bing) %>%
+    mutate(method = "Bing et al."),
+  Reviews %>% 
+    rename(word = review) %>% 
+    mutate(linenumber = row_number()) %>%
+    inner_join(NRC %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+# visualize 
+
+bind_rows(ReviewsAfinn, 
+          ReviewsNRCBing) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")  +
+  theme_bw() +
+  labs(x = "Index", y = "Sentiment")
+# based on the above, it looks like if we want to capture the most words we would be better off using the 
+# NRC or Bing package. However if we want more flexibility on the categorization, we can go with the Afinn. 
+# For the purposes of this research it would be best to use the Afinn package, since categorizing to only positive and negative wouldn't be detailed enought 
+# We can try to use some sentiments from the NRC pack, such surprise and disgust in order to be more specific
+# Bing and NRC have more negative words.
+
+```
+
+Based on the above, it looks like if we want to capture the most words we would be better off using the NRC or Bing package.
+However if we want more flexibility on the categorization, we can go with the Afinn. 
+For the purposes of this research it would be best to use the Afinn package, since categorizing to only positive and negative wouldn't be detailed enough. It also seems like Bing and NRC have more negative words in general. 
+
+
+#### 5.2. Sentiment Analysis
+
+```{r, warning=FALSE, message=FALSE, fig.show="hold", out.width="50%", fig.cap= "Most frequent words used in Reviews (negative vs. positive)"}
+# Most positive and negative words for ironic and regualar review according to Bing 
+
+# ironic
+Reviews %>%
+  filter(ironic == "1") %>% 
+  rename(word = review) %>%
+  inner_join(Bing) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+# More positive words in the ironic reviews 
+
+# regular
+Reviews %>%
+  filter(ironic == "0") %>% 
+  rename(word = review) %>%
+  inner_join(Bing) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+
+# About the same positive words in the regular reviews 
+
+```
+
+We can use the Bing lexicon to add a sentiment to the most common words used in the reviews. The figures suggest a roughly same number of the negative and positive words for both data sets. 
+
+
+A similar analysis can be done, using the Afinn package. 
+
+```{r, warning=FALSE, message=FALSE,   fig.show="hold", out.width="50%"}
+
+# see most common sentiment of ironic reviews according to the Afinn package
+
+IronicAfinn <- Reviews %>% 
+  filter(ironic == 1) %>% 
+  count(review, sort = TRUE) %>% 
+  drop_na() %>% 
+  rename(word = review) %>% 
+  inner_join(Afinn)
+
+# visualize 
+
+IronicAfinn %>% 
+  head(20) %>% 
+  ggplot(aes(word, value, fill = n)) +
+  geom_col() +
+  coord_flip() + 
+  theme_bw() + 
+  labs(title= "Ironic reviews (Afinn Sentiment)",
+       x = "Words", y = "Sentiment")
+
+# same for regular 
+
+RegularAfinn <- Reviews %>% 
+  filter(ironic == 0) %>% 
+  count(review, sort = TRUE) %>% 
+  drop_na() %>% 
+  rename(word = review) %>% 
+  inner_join(Afinn)
+
+# visualize
+RegularAfinn %>% 
+  head(20) %>% 
+  ggplot(aes(word, value, fill = n)) +
+  geom_col() +
+  coord_flip() +
+  theme_bw() + 
+  labs(title= "Regular reviews (Afinn Sentiment)",
+       x = "Words", y = "Sentiment")
+  
+
+
+```
+
+Here, we can see some differences in the sentiments in the two data sets. The regular data contains more positive words. 
+
+
+#### 5.3. TF-IDF 
+
+Another method of identifying differences between the ironoc and regular reviews is TF-IDF which measures how importance of a word in relation to a document in a corpus. The below boxes show the distribution of terms in the ironic (1) and regular (0) corpuses. 
+
+```{r, warning=FALSE, message=FALSE}
+
+
+#### TF/IDF ####
+
+TFIDF <- Data %>%
+  unnest_tokens(word, review) %>%
+  count(ironic, word, sort = TRUE)
+
+TotWords <- TFIDF %>% 
+  group_by(ironic) %>% 
+  summarize(total = sum(n))
+
+ReviewWords <- left_join(TFIDF, TotWords)
+
+rm("TFIDF", "TotWords")
+
+ggplot(ReviewWords, aes(n/total, fill = ironic)) +
+  geom_histogram(show.legend = FALSE) +
+  xlim(NA, 0.0009) +
+  facet_wrap(~ironic, ncol = 2, scales = "free_y") +
+  theme_bw() + 
+  labs(title= "TF/IDF",
+       x = "TF", y = "TF/IDF")
+
+# make it the above interactive 
+# Just as the word usage graph, the histograms suggest that the words occur in a similar fashion between the ironic and regular reviews. 
+# The distribution for the ironic and non- ironic reviews is quite similar (just as it was pinpointed in the word usage graph). There are many rare words in the reviews and fewer that occur frequetly.
+# the long right tales show the words that occur very rarely in the reviews 
+
+
+```
+
+The distribution for the ironic and non- ironic reviews is quite similar (just as it was pinpointed in the word usage graph).
+The long right tales show the words that occur very rarely in the reviews.
+There are many rare words in the reviews and fewer that occur frequently. 
+Overall, the distributions of both ironic and non-ironic reviews are similar to distributions of most language corpuses. 
+
+We can also use Zipf's Law, which suggests that the frequency with which a word appears is inversely proportional to its rank, to analyze the corpus. 
+
+```{r, warning=FALSE, message=FALSE}
+
+#### Taking a look at frequency by rank ####
+
+# Zipf's Law 
+
+FreqByRank <- ReviewWords %>% 
+  group_by(ironic) %>% 
+  mutate(rank = row_number(), 
+         `term frequency` = n/total) %>%
+  ungroup()
+
+# create a regression 
+
+RankSubset <- FreqByRank %>% 
+  filter(rank < 500,
+         rank > 10)
+
+lm(log10(`term frequency`) ~ log10(rank), data = RankSubset)
+
+# visualize the function with the regression 
+FreqByRank %>% 
+  ggplot(aes(rank, `term frequency`, color = ironic)) + 
+  geom_abline(intercept = -0.62, slope = -1.1, 
+              color = "gray50", linetype = 2) +
+  geom_line(size = 1.1, alpha = 0.8) + 
+  theme_bw() + 
+  scale_x_log10() +
+  scale_y_log10() + 
+  labs(x = "Term Frequency",
+            y = "Rank" )
+
+# The graph suggest that the word frequencies in both ironic and non ironic tweets are similar 
+# The relationship between rank and frequency rank an frequencies does exhibit  a mostly negative slope
+# We can see some more significant deviations at low rank words, especially in the case of the non ironic reviews. It seems like when people are not trying to be ironic, they tend to sue less common words. 
+
+
+```
+
+The graph suggest  a result close to the standard version of Zipf’s law for the corpus of ironic and non-ironic reviews. The deviations observed at the upper left corner (higher ranks) indicates that the corpus contains fewer rare words than predicted by the power law. On the other hand the deviations observed at the lower right corner (lower ranks) of the the graph, suggests that the regular reviews are using a lower percent of common words than the ironic collections of reviews. It seems like when people are not trying to be ironic, they tend to use less common words .
+
+
+#### 5.3. Bind TF-IDF 
+
+We can also try to see the less frequent words which are still characteristic words for each review within the corpus. 
+
+```{r, warning=FALSE, message=FALSE}
+
+#### Bind tf/idf ####
+
+TFIDFB <- ReviewWords %>%
+  bind_tf_idf(word, ironic, n)
+
+# visualize 
+TFIDFB %>%
+  group_by(ironic) %>%
+  slice_max(tf_idf, n = 15) %>%
+  ungroup() %>%
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = ironic)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ironic, ncol = 2, scales = "free") +
+  labs(x = "TF-IDF", y = NULL) + 
+  theme_bw()
+
+
+```
+
+The aim of this test was to see the words that distinguish the ironic reviews from the regular ones. The above words are indicated by tf-idf as the most important to each review. At first sight, the words might not carry much information, however if we pay attention to the overall sentiment, we can notice that the ironic set tends to have a more negative sentiment overall. 
+
+
+#### 5.4. TF-IDF N-grams
+
+We also investigate the tf-idf of bigrams across the reviews. These tf-idf values can be visualized for the two datasets. 
+
+```{r}
+#### N-Grams ####
+
+DataBigrams <- Data %>% 
+  unnest_tokens(bigrams, review, token = "ngrams", n = 2)
+
+# count the bigrams
+
+# DataBigrams %>%
+#   count(bigrams, sort = TRUE) %>% 
+#   head(10)
+
+# separating
+BigramSeparated <- DataBigrams %>%
+  separate(bigrams, c("word1", "word2"), sep = " ")
+
+# filtering
+BigramFiltered <- BigramSeparated %>%
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+# new bigram counts:
+BigramCounts <- BigramFiltered %>%
+  count(word1, word2, ironic, sort = TRUE)
+
+# uniting
+BigramUnited <- BigramFiltered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+
+# # filter the word bad 
+# BigramFiltered %>%
+#   filter(word2 == "wolf") %>%
+#   count(ironic, word1, sort = TRUE)
+
+```
+
+Once again we can see a more neutral sentiment for the non-ironic reviews. In case of ironic reviews, we can observe a somewhat light-headed sentiment with "wolf shirt" and "turkey hat" being the top two. 
+
+```{r, warning=FALSE, message=FALSE}
+
+# tf/idf of bigrams 
+
+BigramTFIDF <- BigramUnited %>%
+  count(ironic, bigram) %>%
+  bind_tf_idf(bigram, ironic, n) %>%
+  arrange(desc(tf_idf)) 
+
+# visualize 
+BigramTFIDF %>%
+  group_by(ironic) %>%
+  slice_max(tf_idf, n = 15) %>%
+  ungroup() %>%
+  ggplot(aes(tf_idf, fct_reorder(bigram, tf_idf), fill = ironic)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ironic, ncol = 2, scales = "free") +
+  theme_bw() + 
+  labs(x = "TF-IDF (bigrams)", y = NULL)
+
+## It looks like the wolfs are pretty 
+
+
+```
+
+
+#### 5.5. Analysis of Negation Words 
+
+In order to provide some context to the sentiment analysis, we can also use bigrams. Performing a sentiment analysis on bigrams that contain the word "not", might provide a clue on when to ignore or reverse their contribution to the sentiment score. We are using the AFINN lexicon for sentiment analysis, due to its numeric properties. 
+
+We can see the most frequent words preceded by "not" and try to find a pattern for the ironic and regular reviews. For example, the most common sentiment word to follow “not” was "like", in both data sets.
+
+
+```{r, include=FALSE}
+# how many words are preceded by the word not 
+
+BigramFiltered %>%
+  filter(word1 == "not") %>%
+  count(word1, word2, sort = TRUE) %>% 
+  head(10)
+
+```
+
+It's also good to know which words contributed the most to the "negative" direction. We are multiplying the words' value by the number of appearance and we can visualize the differences. 
+
+```{r, warning=FALSE, message=FALSE}
+
+# sentiment analysis 
+
+NotWrods <- BigramSeparated %>%
+  filter(word1 == "not") %>%
+  inner_join(Afinn, by = c(word2 = "word")) %>%
+  count(word2, value, ironic, sort = TRUE)
+
+# most negative contribution 
+
+NotWrods %>%
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(n * value, word2, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ironic, ncol = 2, scales = "free") + 
+  theme_bw() + 
+  theme(axis.text.y = element_text(size = 6)) + 
+  labs(x = "Sentiment value * number of occurrences",
+       y = "Words preceded by \"not\"")
+
+
+```
+
+We can do a similar exercise in order to capture other negation words such as "not", "no", "never" and "without". 
+
+```{r, warning=FALSE, message=FALSE}
+
+# negation words 
+
+NegationWords <- c("not", "no", "never", "without")
+
+NegatedWords <- BigramSeparated %>%
+  filter(word1 %in% NegationWords) %>%
+  inner_join(Afinn, by = c(word2 = "word")) %>%
+  count(word1, word2, value, ironic, sort = TRUE)
+
+NegatedWords %>% 
+  mutate(contribution = n * value) %>%
+  arrange(desc(abs(contribution))) %>%
+  head(20) %>%
+  mutate(word2 = reorder(word2, contribution)) %>%
+  ggplot(aes(n * value, word2, fill = n * value > 0)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~word1, ncol = 3, scales = "free_y") + 
+  theme_bw() + 
+  labs(x = "Sentiment value * number of occurrences",
+       y = "Words preceded by \"negation\"")
+
+
+```
+
+
+#### 5.6. Networks of bigrams
+
+In order to find differences between ironic and regular reviews, we can try to visualize the connections between the words. We are using bigrams for that. 
+
+```{r, warning=FALSE, message=FALSE, fig.cap = "Bigram Network (ironic reviews)"}
+
+# Ironic Reviews  
+# Visualizing a network of bigrams with ggraph
+
+BigramGraphIronic <- BigramCounts %>%
+  filter(n > 5) %>%
+  filter(ironic == 1 ) %>%
+  graph_from_data_frame()
+
+# visualize 
+
+set.seed(2050)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(BigramGraphIronic, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+# Less ironic reviews, so decrease the n 
+
+
+```
+
+We can see some interesting correlation within the two groups, for example the regular group contains more technical terms such as "blu ray", "sound quality", while the ironic set includes more idiosyncratic terms such as "Chuck Norris", "night breed" and several words associated with "wolf". This might indicate the the main factor that distinguishes sarcastic reviews from regular ones is indeed the overall sentiment rather than use of specific terms. 
+
+```{r, warning=FALSE, message=FALSE, fig.cap = "Bigram Network (regular reviews)"}
+
+# Regular reviews 
+# Visualizing a network of bigrams with ggraph
+
+BigramGraphRegular <- BigramCounts %>%
+  filter(n > 10 ) %>%
+  filter(ironic == 0 ) %>%
+  graph_from_data_frame()
+
+# visualize 
+
+set.seed(2050)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(BigramGraphRegular, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+
+
+```
+
+
+### 6. Detection / Prediction
+
+#### 6.2. Using Context Incongruity as a Sarcasm Detector 
+
+In order to predict sarcasm, we can try to use the concept of context incongruity. Incongruity is the the state of not being in agreement with principles, meaning that there are some significant discrepancies within the sentiment of the text and the context in which it appears. Using this logic, we can try to use simple filters to only select sarcastic reviews fro from a mixed data set. We use the number of stars and a pre-calculated average sentiment as the main variables. We try to filter on those reviews there the number of awarded stars are more or equel to 4 but the reviews sentiment is negative. 
+
+```{r, warning=FALSE, message=FALSE, fig.cap= "Sarcasm Detection (Context Incongruity)"}
+# Let's try to use Context incongruence  
+
+# filter for the most incongruent observation 
+Incongr <- Data %>% 
+  filter(stars >= 4 & review_sentiment < 0)
+
+table(Incongr$ironic) %>% 
+  kable(caption = "Sarcasm Detection (Context Incongruity)", 
+        digits = 4) %>% 
+  kable_styling(full_width = F)
+
+# the filtering did not yield a good result, it returned an equal proportion of ironic and regular reviews 
+
+```
+
+As we can see the filtering did not yield only ironic reviews, which suggests that context incongruity alone is not a good sarcasm detection tool. 
+
+
+#### 6.3. Logistic Regression 
+
+We can try to buil on that idea by creating a logistic regression that uses the number of stars as one of the explanatory variables.
+ in order to perform the analysis, we split the data into train and test sets and we build the following model. We use the following model for the prediction $Ironic = \beta_0 + \beta_1 * Number of Stars  + \beta_2 * Sentimentof AuthorName + \beta_3 * ProductDescriptionSentiment + \beta_4 * ProductReviewSentiment$. The stars are added to the model as factors, to introduce the context incongruity and the average sentiments are used as additional explanatory variables. 
+
+```{r, warning=FALSE, message=FALSE, fig.cap= "Sarcasm Prediction Result (Logistic Regression)"}
+
+#### Making Models to Predict Sarcasm #### 
+
+# Splitting into train and test 
+set.seed(1969)
+trainIndex <- createDataPartition(Data$ironic, p = .7,
+                                  list = FALSE,
+                                  times = 1)
+DataTrainNum <- DataNum[ trainIndex,]
+DataTestNum <- DataNum[-trainIndex,]
+
+
+#### Logistic Regression ####
+
+# Training 
+modFit<-train(ironic ~ stars + author_sentiment + title_sentiment + product_sentiment + review_sentiment,
+              data = DataTrainNum, family = binomial(link = "probit"))
+
+# Test 
+pred<-format(predict(modFit,DataTestNum))              
+
+# Evaluate 
+table(pred,DataTestNum$ironic) %>% 
+  kable(caption = "Sarcasm Prediction Result (Logistic Regression)",
+        digits = 4) %>% 
+  kable_styling(full_width = F)
+
+
+```
+
+After training and then running the model on the test data, we can see that the logit model performed fairly well. It missed in about 30% of cases, thus we can conclude that context incongruity in conjunction with sentiment analysis might be a good approach to sarcasm prediction. 
+
+
+#### 6.4. Random Forrest
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+
+#### Random Forrest using the H2O package####
+
+# Initializing h2o cluster
+h2o.init(nthreads = -1)
+
+#check h2o cluster status
+h2o.init()
+
+set.seed(1989)
+
+# loading data to h2o clusters 
+h.train.num <- as.h2o(DataTrainNum)
+
+# creating predictor and target indices
+x <- 2:ncol(DataTrainNum)
+y <- 1
+
+# Building random forest model on numeric data 
+rf.model.num <- h2o.randomForest(x=x, y=y, training_frame = h.train.num, ntrees = 1000)
+
+# passing the test data
+h.test.num  <- as.h2o(DataTestNum)
+# Random forest evaluation for Numeric data
+pred.num <- as.data.frame(h2o.predict(rf.model.num, h.test.num))
+
+```
+
+Since the combination of average sentiments and the number of stars worked well in our previous model we can try to use the same inputs for a more complex Machine learning model and compare the predictive performance of the two. 
+
+```{r, warning=FALSE, message=FALSE, fig.cap= "Sarcasm Prediction Result (Random forrest)"}
+
+table('Predicted class' =  pred.num$predict, 'Actual class' = DataTestNum$ironic) %>% 
+  kable(digits = 4, caption = "Sarcasm Prediction Result (Random forrest)") %>% 
+  kable_styling(full_width = F)
+
+```
+
+```{r}
+# shuting down h2o cluster
+h2o.shutdown(prompt = F)
+```
+
+
+The Random Forrest model with 1000 trees missed the prediction in around 33% of the cases, which makes it worse in terms of preddictive power compared to the Logistic regression. 
+
+
+### 7. Conclusion 
+
+The aim of the analysis was to investigate ways to detect/predict sarcasms using NLP techniques. Throughout the EDA section, various approaches were applied to the data set. The most effective approach in detecting differences between the reviews was sentiment analysis, thus it was used as a foundation for further analysis. 
+The deeper analysis included a test of the context incongruity concept using filtering, a Logistic model and a Random Forrest. Out of the three methods applied, the logistic regression proved to be the most accurate in terms of prediction (~30% of misses), however, the Random Forrest model also did a relatively ok job, missing at ~33% of predictions. In future research, it can be useful to further investigate the correalation between sentiment and context incongruity in order to improve the accuracy of the models. 
